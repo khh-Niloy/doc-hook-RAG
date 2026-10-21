@@ -28,6 +28,7 @@ lerna-debug.log*
 .settings/
 *.sublime-workspace
 steps.md
+doc-hook-rag.postman_collection.json
 
 # IDE - VSCode
 .vscode/*
