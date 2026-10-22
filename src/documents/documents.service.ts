@@ -2,11 +2,10 @@ import {
   Injectable,
   BadRequestException,
   BadGatewayException,
+  NotFoundException,
   Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PDFParse } from 'pdf-parse';
-import mammoth from 'mammoth';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
 import { Model, Connection, ClientSession, Types } from 'mongoose';
 import { Document, DocumentRecord } from './schemas/document.schema';
@@ -16,10 +15,11 @@ import {
 } from './schemas/document-chunk.schema';
 import { GoogleGenAI } from '@google/genai';
 import { Type } from '@google/genai';
+import { uploadFileToSupabase } from '../config/supabase';
+import { fileUploadQueue } from '../queues/fileUpload.queue';
 
 import {
   SingleEmbeddingResponse,
-  BatchEmbeddingResponse,
   VectorSearchResult,
   RerankedChunk,
   GeminiAnswerResult,
@@ -40,44 +40,51 @@ export class DocumentsService {
     private readonly configService?: ConfigService,
   ) {}
 
-  async embeddedChunk(file: Express.Multer.File) {
+  async handleUpload(file: Express.Multer.File) {
     const extension = file.originalname.split('.').pop()?.toLowerCase();
-
-    let text: string;
-
-    if (extension === 'txt') {
-      text = file.buffer.toString('utf-8');
-    } else if (extension === 'pdf') {
-      const parser = new PDFParse({ data: file.buffer });
-
-      try {
-        const result = await parser.getText();
-        text = result.text;
-      } finally {
-        await parser.destroy();
-      }
-    } else if (extension === 'docx') {
-      const result = await mammoth.extractRawText({
-        buffer: file.buffer,
-      });
-      text = result.value;
-    } else {
+    if (!extension || !['pdf', 'docx', 'txt'].includes(extension)) {
       throw new BadRequestException('Only PDF, DOCX, and TXT are supported');
     }
 
-    if (!text.trim()) {
-      throw new BadRequestException('The uploaded document contains no text');
+    const { fileUrl } = await uploadFileToSupabase(file);
+
+    const document = await this.documentModel.create({
+      filename: file.originalname,
+      fileUrl,
+      originalText: '',
+      status: 'pending',
+      totalChunks: 0,
+    });
+
+    const job = await fileUploadQueue.add('process-file', {
+      documentId: document._id.toString(),
+      fileUrl,
+      filename: file.originalname,
+    });
+
+    return {
+      message: 'File uploaded successfully and queued for background processing',
+      document: {
+        id: document._id,
+        filename: document.filename,
+        fileUrl: document.fileUrl,
+        status: document.status,
+      },
+      jobId: job.id,
+    };
+  }
+
+  async getDocumentById(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid document ID format');
     }
 
-    const chunks = this.policyBasedTextToChunk(text);
-    const embeddings = await this.generateEmbeddings(chunks);
+    const doc = await this.documentModel.findById(id).lean();
+    if (!doc) {
+      throw new NotFoundException(`Document with ID ${id} not found`);
+    }
 
-    const chunkData = chunks.map((chunk, index) => ({
-      text: chunk,
-      embedding: embeddings[index],
-    }));
-
-    return this.saveDocumentAndChunks(file.originalname, text, chunkData);
+    return doc;
   }
 
   async embedQuery(query: string) {
@@ -344,217 +351,6 @@ ${query}
       throw new BadGatewayException(
         'Failed to generate an answer using Gemini: ' + error,
       );
-    }
-  }
-
-  private async generateEmbeddings(chunks: string[]): Promise<number[][]> {
-    const BATCH_SIZE = 32
-    const allEmbeddings: number[][] = [];
-
-    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-      const batch = chunks.slice(i, i + BATCH_SIZE);
-
-      let response: Response;
-
-      try {
-        const embeddingUrl =
-          process.env.EMBEDDING_API_URL ?? 'https://embedding-api-two.vercel.app';
-        response = await fetch(`${embeddingUrl}/embeddings`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ texts: batch }),
-          signal: AbortSignal.timeout(60_000),
-        });
-      } catch {
-        throw new BadGatewayException('Could not connect to the Embedding API');
-      }
-
-      if (!response.ok) {
-        throw new BadGatewayException(
-          `Embedding API failed with status ${response.status}`,
-        );
-      }
-
-      const result = (await response.json()) as BatchEmbeddingResponse;
-
-      if (
-        !Array.isArray(result.embeddings) ||
-        result.embeddings.length !== batch.length ||
-        result.embeddings.some(
-          (embedding) => !Array.isArray(embedding) || embedding.length !== 384,
-        )
-      ) {
-        throw new BadGatewayException(
-          'Embedding API returned an invalid response',
-        );
-      }
-
-      allEmbeddings.push(...result.embeddings);
-    }
-
-    return allEmbeddings;
-  }
-
-  private textToChunk(text: string, chunkSize = 1000, overlap = 200): string[] {
-    const chunks: string[] = [];
-    const cleanText = text.replace(/\s+/g, ' ').trim();
-
-    for (let i = 0; i < cleanText.length; i += chunkSize - overlap) {
-      const chunk = cleanText.slice(i, i + chunkSize);
-
-      if (chunk.trim()) {
-        chunks.push(chunk);
-      }
-    }
-
-    return chunks;
-  }
-
-  private policyBasedTextToChunk(
-    text: string,
-    chunkSize = 1000,
-    overlap = 200,
-  ): string[] {
-    if (!text || !text.trim()) {
-      return [];
-    }
-
-    const policyRegex =
-      /(?:^|\r?\n)\s*(Policy\s+(?:[A-Za-z0-9_.-]+\s*[:\-]|[\d]+[A-Za-z0-9_.-]*\b))/gi;
-    const matches = [...text.matchAll(policyRegex)];
-
-    if (matches.length === 0) {
-      return this.textToChunk(text, chunkSize, overlap);
-    }
-
-    const chunks: string[] = [];
-    const firstHeadingIndex =
-      matches[0].index + matches[0][0].indexOf(matches[0][1]);
-    const preamble = text.slice(0, firstHeadingIndex).trim();
-    if (preamble) {
-      chunks.push(preamble);
-    }
-
-    for (let i = 0; i < matches.length; i++) {
-      const startIndex =
-        matches[i].index + matches[i][0].indexOf(matches[i][1]);
-      const nextHeadingIndex =
-        i + 1 < matches.length
-          ? matches[i + 1].index + matches[i + 1][0].indexOf(matches[i + 1][1])
-          : text.length;
-
-      const policyChunk = text.slice(startIndex, nextHeadingIndex).trim();
-      if (policyChunk) {
-        chunks.push(policyChunk);
-      }
-    }
-
-    return chunks;
-  }
-
-  private async saveDocumentAndChunks(
-    filename: string,
-    originalText: string,
-    chunks: { text: string; embedding: number[] }[],
-  ): Promise<{ id: Types.ObjectId; filename: string; totalChunks: number }> {
-    let session: ClientSession | null = null;
-
-    try {
-      session = await this.connection.startSession();
-      session.startTransaction();
-
-      const [savedDocument] = await this.documentModel.create(
-        [
-          {
-            filename,
-            originalText,
-          },
-        ],
-        { session },
-      );
-
-      const chunkDocs = chunks.map((chunk) => ({
-        documentId: savedDocument._id,
-        text: chunk.text,
-        embedding: chunk.embedding,
-      }));
-
-      if (chunkDocs.length > 0) {
-        await this.documentChunkModel.insertMany(chunkDocs, { session });
-      }
-
-      await session.commitTransaction();
-
-      return {
-        id: savedDocument._id,
-        filename: savedDocument.filename,
-        totalChunks: chunkDocs.length,
-      };
-    } catch (error) {
-      if (session && session.inTransaction()) {
-        try {
-          await session.abortTransaction();
-        } catch {
-          // ignore abort error
-        }
-      }
-
-      const isTransactionUnsupported =
-        error instanceof Error &&
-        (error.message.includes('Transaction numbers are only allowed') ||
-          error.message.includes('Transactions are not supported'));
-
-      if (isTransactionUnsupported) {
-        return this.saveWithCleanup(filename, originalText, chunks);
-      }
-
-      throw error;
-    } finally {
-      if (session) {
-        await session.endSession();
-      }
-    }
-  }
-
-  private async saveWithCleanup(
-    filename: string,
-    originalText: string,
-    chunks: { text: string; embedding: number[] }[],
-  ): Promise<{ id: Types.ObjectId; filename: string; totalChunks: number }> {
-    let savedDocumentId: Types.ObjectId | null = null;
-
-    try {
-      const savedDocument = await this.documentModel.create({
-        filename,
-        originalText,
-      });
-      savedDocumentId = savedDocument._id;
-
-      const chunkDocs = chunks.map((chunk) => ({
-        documentId: savedDocument._id,
-        text: chunk.text,
-        embedding: chunk.embedding,
-      }));
-
-      if (chunkDocs.length > 0) {
-        await this.documentChunkModel.insertMany(chunkDocs);
-      }
-
-      return {
-        id: savedDocument._id,
-        filename: savedDocument.filename,
-        totalChunks: chunkDocs.length,
-      };
-    } catch (error) {
-      if (savedDocumentId) {
-        await Promise.allSettled([
-          this.documentModel.deleteOne({ _id: savedDocumentId }),
-          this.documentChunkModel.deleteMany({ documentId: savedDocumentId }),
-        ]);
-      }
-      throw error;
     }
   }
 }

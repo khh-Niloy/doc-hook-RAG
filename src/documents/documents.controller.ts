@@ -1,6 +1,8 @@
 import {
   Controller,
   Post,
+  Get,
+  Param,
   Body,
   UploadedFile,
   UseInterceptors,
@@ -21,7 +23,12 @@ export class DocumentsController {
       throw new BadRequestException('File is required');
     }
 
-    return this.documentsService.embeddedChunk(file);
+    return this.documentsService.handleUpload(file);
+  }
+
+  @Get(':id')
+  async getDocument(@Param('id') id: string) {
+    return this.documentsService.getDocumentById(id);
   }
 
   @Post('search')

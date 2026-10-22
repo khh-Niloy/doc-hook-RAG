@@ -7,6 +7,7 @@ import {
   DocumentChunk,
   DocumentChunkSchema,
 } from './schemas/document-chunk.schema';
+import '../workers/fileUpload.worker';
 
 @Module({
   imports: [

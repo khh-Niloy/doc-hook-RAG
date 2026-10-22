@@ -9,7 +9,16 @@ export class Document {
   filename: string;
 
   @Prop({ required: true })
+  fileUrl: string;
+
+  @Prop({ default: '' })
   originalText: string;
+
+  @Prop({ default: 'pending', enum: ['pending', 'processing', 'completed', 'failed'] })
+  status: string;
+
+  @Prop({ default: 0 })
+  totalChunks: number;
 }
 
 export const DocumentSchema = SchemaFactory.createForClass(Document);
