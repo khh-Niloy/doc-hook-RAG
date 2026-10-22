@@ -1,23 +1,17 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { envVars } from './envVars';
 
 let supabaseClient: SupabaseClient | null = null;
 
 export const getSupabaseClient = (): SupabaseClient => {
   if (!supabaseClient) {
-    const supabaseUrl =
-      process.env.SUPABASE_URL!;
-    const supabaseKey =
-      process.env.SUPABASE_KEY ??
-      process.env.SUPABASE_ANON_KEY!;
-
-    supabaseClient = createClient(supabaseUrl, supabaseKey);
+    supabaseClient = createClient(envVars.SUPABASE_URL, envVars.SUPABASE_KEY);
   }
 
   return supabaseClient;
 };
 
-export const SUPABASE_BUCKET_NAME =
-  process.env.SUPABASE_STORAGE_BUCKET ?? 'documents';
+export const SUPABASE_BUCKET_NAME = envVars.SUPABASE_STORAGE_BUCKET;
 
 export async function uploadFileToSupabase(
   file: Express.Multer.File,

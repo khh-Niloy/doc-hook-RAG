@@ -26,6 +26,11 @@ export class DocumentsController {
     return this.documentsService.handleUpload(file);
   }
 
+  @Get()
+  async getAllDocuments() {
+    return this.documentsService.getAllDocuments();
+  }
+
   @Get(':id')
   async getDocument(@Param('id') id: string) {
     return this.documentsService.getDocumentById(id);
@@ -37,6 +42,9 @@ export class DocumentsController {
       throw new BadRequestException('A non-empty query string is required');
     }
 
-    return this.documentsService.embedQuery(body.query.trim());
+    return this.documentsService.embedQuery(
+      body.query.trim(),
+      body.documentId?.trim(),
+    );
   }
 }

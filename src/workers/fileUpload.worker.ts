@@ -1,5 +1,6 @@
 import { Worker, Job } from 'bullmq';
 import { getRedisClient } from '../config/redis';
+import { envVars } from '../config/envVars';
 import { FileUploadJobData } from '../queues/fileUpload.queue';
 import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
@@ -63,8 +64,7 @@ function policyBasedTextToChunk(
   }
 
   for (let i = 0; i < matches.length; i++) {
-    const startIndex =
-      matches[i].index + matches[i][0].indexOf(matches[i][1]);
+    const startIndex = matches[i].index + matches[i][0].indexOf(matches[i][1]);
     const nextHeadingIndex =
       i + 1 < matches.length
         ? matches[i + 1].index + matches[i + 1][0].indexOf(matches[i + 1][1])
@@ -87,8 +87,7 @@ async function generateEmbeddings(chunks: string[]): Promise<number[][]> {
   for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
     const batch = chunks.slice(i, i + BATCH_SIZE);
 
-    const embeddingUrl =
-      process.env.EMBEDDING_API_URL ?? 'https://embedding-api-two.vercel.app';
+    const embeddingUrl = envVars.EMBEDDING_API_URL;
     const response = await fetch(`${embeddingUrl}/embeddings`, {
       method: 'POST',
       headers: {
@@ -122,9 +121,7 @@ async function generateEmbeddings(chunks: string[]): Promise<number[][]> {
 
 async function ensureDbConnected() {
   if (mongoose.connection.readyState === 0) {
-    const mongoUri =
-      process.env.MONGODB_URI ??
-      'mongodb+srv://khhniloy0:xWHroCdA4S4fsrqg@cluster0.m65dh.mongodb.net/doc-hook?appName=Cluster0';
+    const mongoUri = envVars.MONGODB_URI;
     await mongoose.connect(mongoUri);
   }
 }
@@ -137,7 +134,9 @@ export const fileUploadWorker = new Worker<FileUploadJobData>(
     const documentModel = getDocumentModel();
     const documentChunkModel = getDocumentChunkModel();
 
-    console.log(`[Worker] Started processing document ${documentId} (${filename})`);
+    console.log(
+      `[Worker] Started processing document ${documentId} (${filename})`,
+    );
 
     // 1. Update status to 'processing'
     await documentModel.findByIdAndUpdate(documentId, {
@@ -220,10 +219,7 @@ export const fileUploadWorker = new Worker<FileUploadJobData>(
         status: updated?.status ?? 'completed',
       };
     } catch (error) {
-      console.error(
-        `[Worker] Error processing document ${documentId}:`,
-        error,
-      );
+      console.error(`[Worker] Error processing document ${documentId}:`, error);
 
       // Clean up orphan chunks and mark document as failed
       await Promise.allSettled([

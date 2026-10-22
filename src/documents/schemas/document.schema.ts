@@ -14,7 +14,10 @@ export class Document {
   @Prop({ default: '' })
   originalText: string;
 
-  @Prop({ default: 'pending', enum: ['pending', 'processing', 'completed', 'failed'] })
+  @Prop({
+    default: 'pending',
+    enum: ['pending', 'processing', 'completed', 'failed'],
+  })
   status: string;
 
   @Prop({ default: 0 })

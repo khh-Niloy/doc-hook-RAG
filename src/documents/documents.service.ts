@@ -13,10 +13,12 @@ import {
   DocumentChunk,
   DocumentChunkRecord,
 } from './schemas/document-chunk.schema';
+import { Qna, QnaRecord } from './schemas/qna.schema';
 import { GoogleGenAI } from '@google/genai';
 import { Type } from '@google/genai';
 import { uploadFileToSupabase } from '../config/supabase';
 import { fileUploadQueue } from '../queues/fileUpload.queue';
+import { envVars } from '../config/envVars';
 
 import {
   SingleEmbeddingResponse,
@@ -34,6 +36,8 @@ export class DocumentsService {
     private readonly documentModel: Model<DocumentRecord>,
     @InjectModel(DocumentChunk.name)
     private readonly documentChunkModel: Model<DocumentChunkRecord>,
+    @InjectModel(Qna.name)
+    private readonly qnaModel: Model<QnaRecord>,
     @InjectConnection()
     private readonly connection: Connection,
     @Optional()
@@ -63,9 +67,11 @@ export class DocumentsService {
     });
 
     return {
-      message: 'File uploaded successfully and queued for background processing',
+      message:
+        'File uploaded successfully and queued for background processing',
       document: {
-        id: document._id,
+        id: document._id.toString(),
+        _id: document._id.toString(),
         filename: document.filename,
         fileUrl: document.fileUrl,
         status: document.status,
@@ -87,7 +93,19 @@ export class DocumentsService {
     return doc;
   }
 
-  async embedQuery(query: string) {
+  async getAllDocuments() {
+    return this.documentModel
+      .find()
+      .sort({ createdAt: -1 })
+      .select('filename fileUrl status totalChunks createdAt updatedAt')
+      .lean();
+  }
+
+  async embedQuery(query: string, documentId?: string) {
+    if (documentId && !Types.ObjectId.isValid(documentId)) {
+      throw new BadRequestException('Invalid document ID format');
+    }
+
     const totalStart = performance.now();
 
     // 1. Embedding Stage
@@ -95,8 +113,7 @@ export class DocumentsService {
     let response: Response;
 
     try {
-      const embeddingUrl =
-        process.env.EMBEDDING_API_URL ?? 'https://embedding-api-two.vercel.app';
+      const embeddingUrl = envVars.EMBEDDING_API_URL;
       response = await fetch(`${embeddingUrl}/embeddings`, {
         method: 'POST',
         headers: {
@@ -137,16 +154,22 @@ export class DocumentsService {
     // 2. Vector Search Stage
     const tVectorStart = performance.now();
     const embeddedUserQuery = result.embedding;
+
+    const vectorSearchStage = {
+      index: 'chunks_vector_index',
+      path: 'embedding',
+      queryVector: embeddedUserQuery,
+      numCandidates: 100,
+      limit: 10,
+      ...(documentId
+        ? { filter: { documentId: new Types.ObjectId(documentId) } }
+        : {}),
+    };
+
     const embeddedChunks =
       await this.documentChunkModel.aggregate<VectorSearchResult>([
         {
-          $vectorSearch: {
-            index: 'chunks_vector_index',
-            path: 'embedding',
-            queryVector: embeddedUserQuery,
-            numCandidates: 100,
-            limit: 10,
-          },
+          $vectorSearch: vectorSearchStage,
         },
         {
           $project: {
@@ -158,10 +181,9 @@ export class DocumentsService {
         },
       ]);
 
-    const tVectorDuration = (
-      (performance.now() - tVectorStart) /
-      1000
-    ).toFixed(2);
+    const tVectorDuration = ((performance.now() - tVectorStart) / 1000).toFixed(
+      2,
+    );
 
     if (embeddedChunks.length === 0) {
       return {
@@ -177,10 +199,9 @@ export class DocumentsService {
     // 3. Reranker Stage
     const tRerankStart = performance.now();
     const finalChunks = await this.rerankChunks(query, embeddedChunks, 5);
-    const tRerankDuration = (
-      (performance.now() - tRerankStart) /
-      1000
-    ).toFixed(2);
+    const tRerankDuration = ((performance.now() - tRerankStart) / 1000).toFixed(
+      2,
+    );
 
     // 4. Gemini Answer Generation Stage
     const tGeminiStart = performance.now();
@@ -188,12 +209,41 @@ export class DocumentsService {
     const concatenatedText = docTextFromChunk.join('\n\n');
 
     const res = await this.generateAnswerWithGemini(query, concatenatedText);
-    const tGeminiDuration = (
-      (performance.now() - tGeminiStart) /
-      1000
-    ).toFixed(2);
+    const tGeminiDuration = ((performance.now() - tGeminiStart) / 1000).toFixed(
+      2,
+    );
 
     const totalDuration = ((performance.now() - totalStart) / 1000).toFixed(2);
+
+    const timings = {
+      embeddingSeconds: Number(tEmbeddingDuration),
+      vectorSearchSeconds: Number(tVectorDuration),
+      rerankerSeconds: Number(tRerankDuration),
+      geminiSeconds: Number(tGeminiDuration),
+      totalSeconds: Number(totalDuration),
+    };
+
+    let documentName = 'All Documents';
+    if (documentId && Types.ObjectId.isValid(documentId)) {
+      const doc = await this.documentModel
+        .findById(documentId)
+        .select('filename')
+        .lean();
+      if (doc) {
+        documentName = doc.filename;
+      }
+    }
+
+    const savedQna = await this.qnaModel.create({
+      documentId: documentId || null,
+      documentName,
+      question: query,
+      answer: res.answer,
+      insufficientContext: res.insufficientContext,
+      rerankedChunks: finalChunks,
+      rawChunks: embeddedChunks,
+      timings,
+    });
 
     return {
       res,
@@ -201,23 +251,47 @@ export class DocumentsService {
       selectedChunksBeforeReranked: embeddedChunks.length,
       rerankedchunks: finalChunks,
       selectedChunksAfterReranked: finalChunks.length,
-      timings: {
-        embeddingSeconds: Number(tEmbeddingDuration),
-        vectorSearchSeconds: Number(tVectorDuration),
-        rerankerSeconds: Number(tRerankDuration),
-        geminiSeconds: Number(tGeminiDuration),
-        totalSeconds: Number(totalDuration),
-      },
+      timings,
+      qna: savedQna,
     };
   }
 
-  // ====== 
+  async getAllQnas() {
+    return this.qnaModel.find().sort({ createdAt: -1 }).lean();
+  }
+
+  async getQnaById(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid QnA ID format');
+    }
+    const qna = await this.qnaModel.findById(id).lean();
+    if (!qna) {
+      throw new NotFoundException(`QnA with ID ${id} not found`);
+    }
+    return qna;
+  }
+
+  async deleteQna(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid QnA ID format');
+    }
+    const deleted = await this.qnaModel.findByIdAndDelete(id).lean();
+    if (!deleted) {
+      throw new NotFoundException(`QnA with ID ${id} not found`);
+    }
+    return { message: 'QnA deleted successfully', id };
+  }
+
+  async clearAllQnas() {
+    await this.qnaModel.deleteMany({});
+    return { message: 'All QnA history cleared' };
+  }
+
+  // ======
   // helper functions
   // ======
   private getAI(): GoogleGenAI {
-    const apiKey =
-      this.configService?.get<string>('GEMINI_API_KEY') ??
-      process.env.GEMINI_API_KEY;
+    const apiKey = envVars.GEMINI_API_KEY;
 
     if (!apiKey) {
       throw new BadGatewayException(
@@ -249,8 +323,7 @@ export class DocumentsService {
     }));
 
     try {
-      const rerankerUrl =
-        process.env.RERANKER_API_URL ?? 'https://cross-encoder-reranker.vercel.app';
+      const rerankerUrl = envVars.RERANKER_API_URL;
       const rerankerResponse = await fetch(`${rerankerUrl}/rerank`, {
         method: 'POST',
         headers: {
@@ -265,7 +338,10 @@ export class DocumentsService {
           ranked_chunks: RerankedChunk[];
         };
 
-        if (Array.isArray(data?.ranked_chunks) && data.ranked_chunks.length > 0) {
+        if (
+          Array.isArray(data?.ranked_chunks) &&
+          data.ranked_chunks.length > 0
+        ) {
           return data.ranked_chunks.slice(0, topK);
         }
       } else {

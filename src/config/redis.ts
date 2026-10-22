@@ -1,10 +1,11 @@
 import Redis from 'ioredis';
+import { envVars } from './envVars';
 
 let redisClient: Redis | null = null;
 
 export const getRedisClient = (): Redis => {
   if (!redisClient) {
-    const redisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
+    const redisUrl = envVars.REDIS_URL;
 
     redisClient = new Redis(redisUrl, {
       maxRetriesPerRequest: null,

@@ -1,5 +1,5 @@
-import { Queue } from "bullmq";
-import { getRedisClient } from "../config/redis";
+import { Queue } from 'bullmq';
+import { getRedisClient } from '../config/redis';
 
 export interface FileUploadJobData {
   documentId: string;
@@ -9,12 +9,12 @@ export interface FileUploadJobData {
 
 const redisClient = getRedisClient();
 
-export const fileUploadQueue = new Queue<FileUploadJobData>("file-upload", {
+export const fileUploadQueue = new Queue<FileUploadJobData>('file-upload', {
   connection: redisClient,
   defaultJobOptions: {
     attempts: 3,
     backoff: {
-      type: "exponential",
+      type: 'exponential',
       delay: 3000,
     },
     removeOnComplete: {
