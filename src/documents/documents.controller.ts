@@ -1,6 +1,8 @@
 import {
   Controller,
   Post,
+  Get,
+  Param,
   Body,
   UploadedFile,
   UseInterceptors,
@@ -21,7 +23,17 @@ export class DocumentsController {
       throw new BadRequestException('File is required');
     }
 
-    return this.documentsService.embeddedChunk(file);
+    return this.documentsService.handleUpload(file);
+  }
+
+  @Get()
+  async getAllDocuments() {
+    return this.documentsService.getAllDocuments();
+  }
+
+  @Get(':id')
+  async getDocument(@Param('id') id: string) {
+    return this.documentsService.getDocumentById(id);
   }
 
   @Post('search')
@@ -30,6 +42,9 @@ export class DocumentsController {
       throw new BadRequestException('A non-empty query string is required');
     }
 
-    return this.documentsService.embedQuery(body.query.trim());
+    return this.documentsService.embedQuery(
+      body.query.trim(),
+      body.documentId?.trim(),
+    );
   }
 }
