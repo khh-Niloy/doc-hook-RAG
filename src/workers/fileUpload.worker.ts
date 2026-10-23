@@ -2,7 +2,7 @@ import { Worker, Job } from 'bullmq';
 import { getRedisClient } from '../config/redis';
 import { envVars } from '../config/envVars';
 import { FileUploadJobData } from '../queues/fileUpload.queue';
-import { PDFParse } from 'pdf-parse';
+import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import mongoose, { Types } from 'mongoose';
 import { Document, DocumentSchema } from '../documents/schemas/document.schema';
@@ -161,13 +161,8 @@ export const fileUploadWorker = new Worker<FileUploadJobData>(
       if (extension === 'txt') {
         text = buffer.toString('utf-8');
       } else if (extension === 'pdf') {
-        const parser = new PDFParse({ data: buffer });
-        try {
-          const result = await parser.getText();
-          text = result.text;
-        } finally {
-          await parser.destroy();
-        }
+        const result = await pdfParse(buffer);
+        text = result.text;
       } else if (extension === 'docx') {
         const result = await mammoth.extractRawText({ buffer });
         text = result.value;

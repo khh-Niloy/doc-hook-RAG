@@ -9,7 +9,8 @@ export const getRedisClient = (): Redis => {
 
     redisClient = new Redis(redisUrl, {
       maxRetriesPerRequest: null,
-      lazyConnect: false,
+      lazyConnect: true,
+      enableOfflineQueue: false,
     });
 
     redisClient.on('connect', () => {
@@ -17,16 +18,24 @@ export const getRedisClient = (): Redis => {
     });
 
     redisClient.on('error', (error) => {
-      console.error('Redis connection error:', { error });
+      console.warn('Redis connection warning:', error.message);
     });
   }
   return redisClient;
 };
 
-export const connectRedis = async (): Promise<Redis> => {
-  const client = getRedisClient();
-  if (client.status === 'wait' || client.status === 'close') {
-    await client.connect();
+export const connectRedis = async (): Promise<Redis | null> => {
+  try {
+    const client = getRedisClient();
+    if (client.status === 'wait' || client.status === 'close') {
+      await client.connect();
+    }
+    return client;
+  } catch (error) {
+    console.warn(
+      'Redis connection failed, continuing without blocking server:',
+      error,
+    );
+    return null;
   }
-  return client;
 };
