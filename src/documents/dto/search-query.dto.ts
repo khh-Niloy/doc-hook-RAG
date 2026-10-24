@@ -1,4 +1,4 @@
 export class SearchQueryDto {
   query: string;
-  documentId?: string;
+  documentId: string;
 }
