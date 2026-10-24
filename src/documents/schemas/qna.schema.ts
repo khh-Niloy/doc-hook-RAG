@@ -5,10 +5,10 @@ export type QnaRecord = HydratedDocument<Qna>;
 
 @Schema({ timestamps: true, collection: 'qnas' })
 export class Qna {
-  @Prop({ type: MongooseSchema.Types.Mixed, default: null })
-  documentId?: string | null;
+  @Prop({ type: MongooseSchema.Types.Mixed, required: true })
+  documentId: string;
 
-  @Prop({ default: 'All Documents' })
+  @Prop({ required: true })
   documentName: string;
 
   @Prop({ required: true })

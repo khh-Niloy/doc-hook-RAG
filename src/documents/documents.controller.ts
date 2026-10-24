@@ -42,9 +42,17 @@ export class DocumentsController {
       throw new BadRequestException('A non-empty query string is required');
     }
 
+    if (
+      !body.documentId ||
+      typeof body.documentId !== 'string' ||
+      !body.documentId.trim()
+    ) {
+      throw new BadRequestException('documentId is required');
+    }
+
     return this.documentsService.embedQuery(
       body.query.trim(),
-      body.documentId?.trim(),
+      body.documentId.trim(),
     );
   }
 }
