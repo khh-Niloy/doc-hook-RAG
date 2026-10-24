@@ -101,9 +101,9 @@ export class DocumentsService {
       .lean();
   }
 
-  async embedQuery(query: string, documentId?: string) {
-    if (documentId && !Types.ObjectId.isValid(documentId)) {
-      throw new BadRequestException('Invalid document ID format');
+  async embedQuery(query: string, documentId: string) {
+    if (!documentId || !Types.ObjectId.isValid(documentId)) {
+      throw new BadRequestException('A valid document ID is required');
     }
 
     const totalStart = performance.now();
@@ -161,9 +161,7 @@ export class DocumentsService {
       queryVector: embeddedUserQuery,
       numCandidates: 100,
       limit: 10,
-      ...(documentId
-        ? { filter: { documentId: new Types.ObjectId(documentId) } }
-        : {}),
+      filter: { documentId: new Types.ObjectId(documentId) },
     };
 
     const embeddedChunks =
@@ -223,19 +221,17 @@ export class DocumentsService {
       totalSeconds: Number(totalDuration),
     };
 
-    let documentName = 'All Documents';
-    if (documentId && Types.ObjectId.isValid(documentId)) {
-      const doc = await this.documentModel
-        .findById(documentId)
-        .select('filename')
-        .lean();
-      if (doc) {
-        documentName = doc.filename;
-      }
+    const doc = await this.documentModel
+      .findById(documentId)
+      .select('filename')
+      .lean();
+    if (!doc) {
+      throw new NotFoundException('Document not found');
     }
+    const documentName = doc.filename;
 
     const savedQna = await this.qnaModel.create({
-      documentId: documentId || null,
+      documentId,
       documentName,
       question: query,
       answer: res.answer,
